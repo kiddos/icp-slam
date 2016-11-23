@@ -60,9 +60,13 @@ class Map:
                 newx = int(x + dx)
                 if (newx < 0 or newx >= cols or newy < 0 or newy >= rows) or \
                     self.real_map[newy][newx] > 0.5:
-                    p = [dx, dy]
-                    if p not in points:
-                        points.append(p)
+                    #  p = [dx, dy]
+                    #  if p not in points:
+                    points.append([dx, dy])
+                    #  points.append([dx + 1, dy])
+                    #  points.append([dx - 1, dy])
+                    #  points.append([dx, dy + 1])
+                    #  points.append([dx, dy - 1])
                     break
         R = np.array([[math.cos(a), -math.sin(a)],
             [math.sin(a), math.cos(a)]])
@@ -105,7 +109,7 @@ class Submap():
 
         H = np.matmul(BB.T, AA)
         U, S, V = np.linalg.svd(H)
-        R = np.dot(U, V)
+        R = np.dot(U, V.T)
 
         T = centroid_A - np.matmul(R, centroid_B)
         return R, T
@@ -118,35 +122,52 @@ class Submap():
 
         r = np.eye(2)
         t = np.zeros(shape=[1, 2])
-        B = np.copy(estimate_points)
+        points = np.copy(estimate_points)
+        B = np.copy(points)
 
-        k = 3
-        best_error = self.max_scan_range
+        k = 2
+        best_error = self.max_scan_range * 2
+        pose = np.copy(estimate_pose)
         for it in range(max_iteration):
             # data association
-            dist, indices = kdtree.query(B, k=k)
-            valid = np.sum(dist / k, axis=1) < best_error * 1.1
-            A = correct_hits[indices[valid, 0], :]
+            dist, indices = kdtree.query(points, k=k)
+            #  print(dist)
+            #  valid = np.sum(dist / k, axis=1) < np.sqrt(best_error)
+            new_indices = np.argsort(np.sum(np.abs(dist), axis=1))
+            new_indices = new_indices[:int(new_indices.shape[0] * 0.50)]
+            A = correct_hits[indices[new_indices, 0], :]
             for i in range(1, k):
-                A += correct_hits[indices[valid, i], :]
+                A += correct_hits[indices[new_indices, i], :]
             A /= k
+            #  print(valid.shape)
             A = np.reshape(A, [A.shape[0], 2])
-            B = B[valid, :]
+            B = points[new_indices, :]
 
             if len(B) == 0 or len(A) == 0:
                 break
+            #  print(A.shape)
+            #  print(B.shape)
+            #  print(points.shape)
 
             R, T = self.best_fit_transform(A, B)
-            B = np.matmul(B, R) + T
+
+            B = points[new_indices, :]
             diff = B - A
             error = np.sum(diff * diff) / diff.shape[0]
+            print('iteration: %d error: %f' % (it, error))
+            #  print('new pose: %s' % (pose))
             if error < best_error:
                 best_error = error
-            print('iteration: %d error: %f' % (it, error))
-            r = np.matmul(R, r)
-            t += T
-        pose = np.copy(estimate_pose)
-        pose[:2] = np.matmul(pose[:2], r) + t
+                points = np.matmul(points, R) + T
+                pose[:2] = np.matmul(pose[:2], R) + T
+                r = np.matmul(r, R)
+                t += T
+            else:
+                break
+            #  print('\ntranslation: ', T)
+
+        #  pose[:2] = np.matmul(pose[:2], r) + t
+        #  pose[:2] = np.matmul(pose[:2], r) + T
         pose[2] -= math.asin(r[1][0])
         return r, t, pose
 
@@ -196,6 +217,8 @@ class Submap():
 
 
     def prepare_scan_points(self, raw_points, estimate_pose):
+        #  print('estimate_pose: ', end='')
+        output_pose(estimate_pose)
         points = self.estimate(raw_points, estimate_pose)
         R, T, pose = self.icp(points, estimate_pose)
         return R, T, pose
@@ -203,24 +226,26 @@ class Submap():
 
     def update_scan(self, raw_points, pose):
         new_pose = np.copy(pose)
+        print('new pose at start: ', end='')
+        output_pose(new_pose)
         r = np.eye(2)
-        t = np.zeros(shape=[1, 2])
+        T = np.zeros(shape=[1, 2])
         if len(self.poses) == 0:
             self.setup()
             points = self.estimate(raw_points, pose)
             self.update_grid(points)
         else:
-            for i in range(6):
+            for i in range(1):
                 R, T, pose = self.prepare_scan_points(raw_points, new_pose)
                 new_pose = pose
                 print('new pose ', end='')
-                output_pose(new_pose)
+                output_pose(pose)
                 r = np.matmul(R, r)
-                t += T
             points = self.estimate(raw_points, pose)
-            self.update_grid(points)
+            if len(points) != 0:
+                self.update_grid(points)
         self.poses.append(pose)
-        return r, t, pose
+        return r, T, pose
 
 
 class Robot:
@@ -239,8 +264,9 @@ class Robot:
 
 
     def motion_update(self, u, noise=True):
-        T = np.array([u[0] * math.cos(u[1]), u[0] * math.sin(u[1])])
-        self.xi[2] += u[1]
+        alpha = self.xi[2] + u[1]
+        T = np.array([u[0] * math.cos(alpha), u[0] * math.sin(alpha)])
+        self.xi[2] = alpha
         if self.xi[2] > 2 * math.pi:
             self.xi[2] -= 2 * math.pi
         self.xi[:2] += T
@@ -248,16 +274,24 @@ class Robot:
         if noise:
             translate_noise = np.random.normal(0, self.motion_noise, 2) * T
             rotation_noise = np.random.normal(0, self.steering_noise)
+            print('rotation noise: %f deg' % (rotation_noise / math.pi * 180))
             self.p[:2] = self.xi[:2] + translate_noise
             self.p[2] = self.xi[2] + rotation_noise
+        else:
+            self.p[:2] = self.xi[:2]
+            self.p[2] = self.xi[2]
+        print('move to ', end='')
+        output_pose(self.p)
 
 
     def measurement_update(self, m, output=True):
+        print('scanning ', end='')
+        output_pose(self.p)
         raw_points = m.scan_hits(self.p, self.max_range, self.max_radius,
             self.sample_count)
-        R, T, new_pose = self.submap.update_scan(raw_points, self.xi)
-        print('old pose', end='')
+        print('before update ', end='')
         output_pose(self.xi)
+        R, T, new_pose = self.submap.update_scan(raw_points, self.xi)
         self.xi = new_pose
         if output:
             print('rotation: %f deg, translation: %s' %
@@ -266,6 +300,7 @@ class Robot:
             output_pose(self.xi)
             print('real pose: ', end='')
             output_pose(self.p)
+        self.poses.append(self.xi)
 
 
 def icp_slam(count, robot, m, motions):
@@ -276,37 +311,60 @@ def icp_slam(count, robot, m, motions):
     return image,
 
 
+def to_image(grid):
+    max_out = grid > 1.0
+    image = (np.copy(grid) * 255.0).astype(np.uint8)
+    image[max_out] = 255
+    return image
+
+
+def draw_robot_poses(image, poses):
+    for pose in poses:
+        x = int(pose[0])
+        y = int(pose[1])
+        print((x, y))
+        cv2.circle(image, (x, y), 1, (128), -1)
+
+
 def main():
     m = Map('./map.png')
 
     p = np.array([56, 66, 0], dtype=np.float32)
     xi = np.copy(p)
-    max_range = 120
+    max_range = 200
     max_radius = (360.0 / 180.0) * math.pi
     measurement_noise = 3
-    motion_noise = 2.0
-    steering_noise = math.pi / 24
+    motion_noise = 0.6
+    steering_noise = math.pi / 60
+    add_noise = True
 
     robot = Robot(p, xi, max_range, max_radius,
         measurement_noise, motion_noise, steering_noise)
     robot.measurement_update(m)
+    robot.motion_update(np.array([0, math.pi * 3 / 4], dtype=np.float32),
+        add_noise)
 
-    robot.motion_update(np.array([5, 0], dtype=np.float32))
-    robot.measurement_update(m)
+    motion_command = np.array([5, 0], dtype=np.float32)
+    for i in range(300):
+        robot.motion_update(motion_command, add_noise)
+        robot.measurement_update(m)
 
-    plt.figure()
-    plt.imshow(robot.submap.grid)
-    plt.colorbar()
-
-    #  motions = []
-    #  frames = 12
-    #  for i in range(frames):
-    #      motions.append(np.array([5, 0], dtype=np.float32))
-    #  figure = plt.figure()
-    #  anim = animation.FuncAnimation(figure, icp_slam, frames*2,
-    #      fargs=(robot, m, motions), interval=500, blit=True)
-    #  anim.repeat = False
-    plt.show()
+        image = to_image(robot.submap.grid)
+        draw_robot_poses(image, robot.poses)
+        cv2.imshow('display', image)
+        key = cv2.waitKey(0)
+        #  print(key)
+        #  print(ord('q'))
+        if key in [ord('q'), ord('Q'), 27]:
+            break
+        elif key == ord('w'):
+            motion_command = np.array([5, 0], dtype=np.float32)
+        elif key == ord('s'):
+            motion_command = np.array([5, math.pi], dtype=np.float32)
+        elif key == ord('a'):
+            motion_command = np.array([5, math.pi * 3 / 2], dtype=np.float32)
+        elif key == ord('d'):
+            motion_command = np.array([5, math.pi / 2], dtype=np.float32)
 
 
 if __name__ == '__main__':
