@@ -91,6 +91,19 @@ class Submap():
         return np.array(hits)
 
 
+    def get_misses(self, raw_hits):
+        misses = list()
+        for hit in raw_hits:
+            x = int(hit[0])
+            y = int(hit[1])
+            dx = 1 if x > 0 else -1
+            dy = 1 if y > 0 else -1
+            for i in range(0, y - dy, dy):
+                for j in range(0, x - dx, dx):
+                    misses.append([j, i])
+        return misses
+
+
     def estimate(self, points, pose):
         T = pose[:2]
         a = -pose[2]
@@ -184,7 +197,7 @@ class Submap():
         self.max_point = np.array([dim, dim])
 
 
-    def update_grid(self, points):
+    def update_hits(self, points):
         min_point = np.array([np.min(points[0, :]), np.min(points[1, :])])
         max_point = np.array([np.max(points[0, :]), np.max(points[1, :])])
         ref = np.copy(self.min_point)
@@ -216,6 +229,23 @@ class Submap():
                     odds(self.p_hit))
 
 
+    def update_misses(self, points):
+        for point in points:
+            x = int(point[0])
+            y = int(point[1])
+            if x >= 0 and x < self.cols and y >= 0 and y < self.rows:
+                self.grid[y][x] = odds_inv(odds(self.grid[y][x]) *
+                    odds(self.p_miss))
+
+
+    def update_grid(self, raw_points, pose):
+        hits = self.estimate(raw_points, pose)
+        if len(hits) > 0:
+            self.update_hits(hits)
+        #  misses = self.estimate(self.get_misses(raw_points), pose)
+        #  self.update_misses(misses)
+
+
     def prepare_scan_points(self, raw_points, estimate_pose):
         #  print('estimate_pose: ', end='')
         output_pose(estimate_pose)
@@ -232,8 +262,7 @@ class Submap():
         T = np.zeros(shape=[1, 2])
         if len(self.poses) == 0:
             self.setup()
-            points = self.estimate(raw_points, pose)
-            self.update_grid(points)
+            self.update_grid(raw_points, pose)
         else:
             for i in range(1):
                 R, T, pose = self.prepare_scan_points(raw_points, new_pose)
@@ -241,9 +270,7 @@ class Submap():
                 print('new pose ', end='')
                 output_pose(pose)
                 r = np.matmul(R, r)
-            points = self.estimate(raw_points, pose)
-            if len(points) != 0:
-                self.update_grid(points)
+            self.update_grid(raw_points, pose)
         self.poses.append(pose)
         return r, T, pose
 
@@ -303,18 +330,13 @@ class Robot:
         self.poses.append(self.xi)
 
 
-def icp_slam(count, robot, m, motions):
-    robot.motion_update(motions[count])
-    robot.measurement_update(m)
-    display = np.copy(robot.submap.grid)
-    image = plt.imshow(display)
-    return image,
-
-
 def to_image(grid):
-    max_out = grid > 1.0
-    image = (np.copy(grid) * 255.0).astype(np.uint8)
-    image[max_out] = 255
+    image = np.copy(grid)
+    max_out = image > 1.0
+    image[max_out] = 1.0
+    # inverse
+    image = 1.0 - image
+    image = (image * 255.0).astype(np.uint8)
     return image
 
 
@@ -322,8 +344,33 @@ def draw_robot_poses(image, poses):
     for pose in poses:
         x = int(pose[0])
         y = int(pose[1])
-        print((x, y))
         cv2.circle(image, (x, y), 1, (128), -1)
+
+
+def prepare_motion_command(motion_file):
+    motion_commands = list()
+    with open(motion_file, 'r') as f:
+        line = f.readline()
+        while line:
+            command = line.split(' ')
+            speed = float(command[0])
+            direction = float(command[1]) / 180.0 * math.pi
+            line = f.readline()
+            motion_commands.append(np.array([speed, direction]))
+    return motion_commands
+
+
+def icp_slam(robot, add_noise, m, motion_commands):
+    images = list()
+
+    for motion_command in motion_commands:
+        robot.motion_update(motion_command, add_noise)
+        robot.measurement_update(m)
+        image = to_image(robot.submap.grid)
+        draw_robot_poses(image, robot.poses)
+
+        images.append((plt.imshow(image),))
+    return images
 
 
 def main():
@@ -334,37 +381,48 @@ def main():
     max_range = 200
     max_radius = (360.0 / 180.0) * math.pi
     measurement_noise = 3
-    motion_noise = 0.6
+    motion_noise = 0.1
     steering_noise = math.pi / 60
     add_noise = True
 
     robot = Robot(p, xi, max_range, max_radius,
         measurement_noise, motion_noise, steering_noise)
     robot.measurement_update(m)
-    robot.motion_update(np.array([0, math.pi * 3 / 4], dtype=np.float32),
-        add_noise)
+    #  robot.motion_update(np.array([0, math.pi * 3 / 4], dtype=np.float32),
+    #      add_noise)
 
-    motion_command = np.array([5, 0], dtype=np.float32)
-    for i in range(300):
-        robot.motion_update(motion_command, add_noise)
-        robot.measurement_update(m)
+    commands = prepare_motion_command('./motion_command.txt')
 
-        image = to_image(robot.submap.grid)
-        draw_robot_poses(image, robot.poses)
-        cv2.imshow('display', image)
-        key = cv2.waitKey(0)
-        #  print(key)
-        #  print(ord('q'))
-        if key in [ord('q'), ord('Q'), 27]:
-            break
-        elif key == ord('w'):
-            motion_command = np.array([5, 0], dtype=np.float32)
-        elif key == ord('s'):
-            motion_command = np.array([5, math.pi], dtype=np.float32)
-        elif key == ord('a'):
-            motion_command = np.array([5, math.pi * 3 / 2], dtype=np.float32)
-        elif key == ord('d'):
-            motion_command = np.array([5, math.pi / 2], dtype=np.float32)
+    fig = plt.figure()
+    images = icp_slam(robot, add_noise, m, commands)
+    anim = animation.ArtistAnimation(fig, images, interval=500, repeat_delay=3000,
+        blit=True)
+    anim.repeat = False
+    plt.colorbar()
+    plt.show()
+
+    #  motion_command = np.array([5, 0], dtype=np.float32)
+    #  for i in range(300):
+    #      robot.motion_update(motion_command, add_noise)
+    #      robot.measurement_update(m)
+
+    #      image = to_image(robot.submap.grid)
+    #      draw_robot_poses(image, robot.poses)
+
+    #      cv2.imshow('display', image)
+    #      key = cv2.waitKey(0)
+    #      #  print(key)
+    #      #  print(ord('q'))
+    #      if key in [ord('q'), ord('Q'), 27]:
+    #          break
+    #      elif key == ord('w'):
+    #          motion_command = np.array([5, 0], dtype=np.float32)
+    #      elif key == ord('s'):
+    #          motion_command = np.array([5, math.pi], dtype=np.float32)
+    #      elif key == ord('a'):
+    #          motion_command = np.array([5, math.pi * 3 / 2], dtype=np.float32)
+    #      elif key == ord('d'):
+    #          motion_command = np.array([5, math.pi / 2], dtype=np.float32)
 
 
 if __name__ == '__main__':
