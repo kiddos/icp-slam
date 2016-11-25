@@ -395,11 +395,12 @@ def main():
 
     fig = plt.figure()
     images = icp_slam(robot, add_noise, m, commands)
-    anim = animation.ArtistAnimation(fig, images, interval=500, repeat_delay=3000,
+    anim = animation.ArtistAnimation(fig, images, interval=50, repeat_delay=3000,
         blit=True)
     anim.repeat = False
     plt.colorbar()
     plt.show()
+    anim.save('output.mp4')
 
     #  motion_command = np.array([5, 0], dtype=np.float32)
     #  for i in range(300):
