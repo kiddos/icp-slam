@@ -373,6 +373,31 @@ def icp_slam(robot, add_noise, m, motion_commands):
     return images
 
 
+def user_command(robot, add_noise, m):
+    motion_command = np.array([5, 0], dtype=np.float32)
+    for i in range(300):
+        robot.motion_update(motion_command, add_noise)
+        robot.measurement_update(m)
+
+        image = to_image(robot.submap.grid)
+        draw_robot_poses(image, robot.poses)
+
+        cv2.imshow('display', image)
+        key = cv2.waitKey(0)
+        #  print(key)
+        #  print(ord('q'))
+        if key in [ord('q'), ord('Q'), 27]:
+            break
+        elif key == ord('w'):
+            motion_command = np.array([5, 0], dtype=np.float32)
+        elif key == ord('s'):
+            motion_command = np.array([5, math.pi], dtype=np.float32)
+        elif key == ord('a'):
+            motion_command = np.array([5, math.pi * 3 / 2], dtype=np.float32)
+        elif key == ord('d'):
+            motion_command = np.array([5, math.pi / 2], dtype=np.float32)
+
+
 def main():
     m = Map('./map.png')
 
@@ -388,42 +413,17 @@ def main():
     robot = Robot(p, xi, max_range, max_radius,
         measurement_noise, motion_noise, steering_noise)
     robot.measurement_update(m)
-    #  robot.motion_update(np.array([0, math.pi * 3 / 4], dtype=np.float32),
-    #      add_noise)
 
     commands = prepare_motion_command('./motion_command.txt')
 
     fig = plt.figure()
     images = icp_slam(robot, add_noise, m, commands)
-    anim = animation.ArtistAnimation(fig, images, interval=50, repeat_delay=3000,
+    anim = animation.ArtistAnimation(fig, images, interval=160, repeat_delay=3000,
         blit=True)
     anim.repeat = False
     plt.colorbar()
     plt.show()
     anim.save('output.mp4')
-
-    #  motion_command = np.array([5, 0], dtype=np.float32)
-    #  for i in range(300):
-    #      robot.motion_update(motion_command, add_noise)
-    #      robot.measurement_update(m)
-
-    #      image = to_image(robot.submap.grid)
-    #      draw_robot_poses(image, robot.poses)
-
-    #      cv2.imshow('display', image)
-    #      key = cv2.waitKey(0)
-    #      #  print(key)
-    #      #  print(ord('q'))
-    #      if key in [ord('q'), ord('Q'), 27]:
-    #          break
-    #      elif key == ord('w'):
-    #          motion_command = np.array([5, 0], dtype=np.float32)
-    #      elif key == ord('s'):
-    #          motion_command = np.array([5, math.pi], dtype=np.float32)
-    #      elif key == ord('a'):
-    #          motion_command = np.array([5, math.pi * 3 / 2], dtype=np.float32)
-    #      elif key == ord('d'):
-    #          motion_command = np.array([5, math.pi / 2], dtype=np.float32)
 
 
 if __name__ == '__main__':
