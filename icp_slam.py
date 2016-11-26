@@ -360,16 +360,24 @@ def prepare_motion_command(motion_file):
     return motion_commands
 
 
-def icp_slam(robot, add_noise, m, motion_commands):
+def icp_slam(robot, add_noise, m, motion_commands, color=True):
     images = list()
 
+    # initial measurement
+    robot.measurement_update(m)
+
+    # motion commands
     for motion_command in motion_commands:
         robot.motion_update(motion_command, add_noise)
         robot.measurement_update(m)
         image = to_image(robot.submap.grid)
         draw_robot_poses(image, robot.poses)
 
-        images.append((plt.imshow(image),))
+        if color:
+            images.append((plt.imshow(image,),))
+        else:
+            images.append((plt.imshow(image, cmap=plt.get_cmap('gray')),))
+    plt.colorbar()
     return images
 
 
@@ -412,16 +420,14 @@ def main():
 
     robot = Robot(p, xi, max_range, max_radius,
         measurement_noise, motion_noise, steering_noise)
-    robot.measurement_update(m)
 
     commands = prepare_motion_command('./motion_command.txt')
 
     fig = plt.figure()
     images = icp_slam(robot, add_noise, m, commands)
-    anim = animation.ArtistAnimation(fig, images, interval=160, repeat_delay=3000,
+    anim = animation.ArtistAnimation(fig, images, interval=360, repeat_delay=3000,
         blit=True)
     anim.repeat = False
-    plt.colorbar()
     plt.show()
     anim.save('output.mp4')
 
